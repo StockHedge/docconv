@@ -1,0 +1,20 @@
+# 파이썬
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# 변환 결과·시험 산출물
+output/
+
+# AI 작업 인계 문서 (로컬 전용 - 개인 환경 정보 포함)
+docs/ai/
+
+# 편집기
+.vscode/
+.idea/
+*.swp
+.DS_Store

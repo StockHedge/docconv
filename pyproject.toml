@@ -1,0 +1,36 @@
+[project]
+name = "docconv"
+version = "1.0.0"
+description = "로컬 문서 변환기 - PDF/DOCX/HWP/HWPX/DOC/CSV/XLSX/XLS 상호 변환"
+requires-python = ">=3.10"
+dependencies = [
+    "lxml>=5.0",
+    "olefile>=0.47",
+    "PyMuPDF>=1.24",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "XlsxWriter>=3.1",
+]
+
+[project.optional-dependencies]
+full = [
+    "xlrd>=2.0",
+    "tkinterdnd2>=0.4",
+    "beautifulsoup4>=4.12",
+    "striprtf>=0.0.26",
+    "odfpy>=1.4",
+    "pywin32>=306 ; sys_platform == 'win32'",
+]
+
+[project.scripts]
+docconv = "docconv.cli:main"
+
+[project.gui-scripts]
+docconv-gui = "docconv.gui.app:run"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["docconv*"]
