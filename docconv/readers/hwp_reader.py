@@ -75,7 +75,7 @@ HWPTAG_FOOTNOTE_SHAPE = HWPTAG_BEGIN + 58
 HWPTAG_PAGE_BORDER_FILL = HWPTAG_BEGIN + 59
 HWPTAG_SHAPE_COMPONENT = HWPTAG_BEGIN + 60
 HWPTAG_TABLE = HWPTAG_BEGIN + 61
-HWPTAG_SHAPE_COMPONENT_PICTURE = HWPTAG_BEGIN + 67
+HWPTAG_SHAPE_COMPONENT_PICTURE = HWPTAG_BEGIN + 69  # 85. +67(=83)은 CURVE다
 
 # -- PARA_TEXT 제어 문자 분류 ----------------------------------------------
 #: 1 WCHAR만 차지하는 제어 문자
@@ -636,10 +636,26 @@ class HwpReader:
             cell_level = r.level
 
             # 셀 안의 문단들을 읽는다.
+            #
+            # `level > cell_level` 로 찾으면 안 된다. 실제 한/글 파일에서
+            # 셀의 LIST_HEADER와 그 안의 PARA_HEADER가 **같은 level**로 나온다.
+            #
+            #     L2 LIST_HEADER      <- 셀 시작
+            #     L2 PARA_HEADER      <- 셀 내용 (같은 level!)
+            #       L3 PARA_TEXT
+            #
+            # 그래서 같은 level도 받아들이고, **다음 셀(LIST_HEADER)이 나오거나
+            # 표 밖으로 나갈 때** 멈춘다. 이 조건을 틀리면 표가 통째로 빈 칸이
+            # 된다(실측: 7x4 표가 12자만 남았다).
             blocks: list[Block] = []
             k = j + 1
-            while k < len(recs) and recs[k].level > cell_level:
-                if recs[k].tag == HWPTAG_PARA_HEADER:
+            while k < len(recs):
+                nxt = recs[k]
+                if nxt.level < cell_level:
+                    break  # 표 밖으로 나갔다
+                if nxt.level == cell_level and nxt.tag == HWPTAG_LIST_HEADER:
+                    break  # 다음 셀이 시작됐다
+                if nxt.tag == HWPTAG_PARA_HEADER:
                     p, used, ex = self._read_paragraph(recs, k)
                     if p is not None:
                         blocks.append(p)
@@ -688,6 +704,9 @@ class HwpReader:
                 if bin_id:
                     img = self._image_by_id(bin_id)
                     if img is not None:
+                        img.width_pt, img.height_pt = _parse_picture_size(
+                            recs[j].payload
+                        )
                         while j < len(recs) and recs[j].level > ctrl_level:
                             j += 1
                         return img, max(1, j - i)
@@ -797,9 +816,23 @@ def _parse_table_rec(payload: bytes) -> tuple[int, int, list[int]]:
 
 
 def _parse_cell_header(payload: bytes) -> tuple[int, int, int, int]:
-    """표 셀 LIST_HEADER에서 (col, row, colspan, rowspan)."""
+    """표 셀 LIST_HEADER에서 (col, row, colspan, rowspan).
+
+    문단 수는 **INT32(4바이트)** 다. INT16으로 읽으면 이후 필드가 2바이트씩
+    밀려 col과 row가 뒤바뀐 채 나온다. 그러면 셀이 엉뚱한 자리에 놓이고 서로
+    덮어써서 값이 사라진다(실측: 7x4 표의 첫 행이 통째로 비었다).
+
+    실제 바이트 배치::
+
+        01000000  문단 수  (INT32)
+        20000000  속성     (UINT32)
+        0100      col
+        0000      row
+        0100      colSpan
+        0100      rowSpan
+    """
     c = Cursor(payload)
-    c.i16()  # 문단 수
+    c.i32()  # 문단 수
     c.u32()  # 속성
     col = c.u16()
     row = c.u16()
@@ -811,18 +844,47 @@ def _parse_cell_header(payload: bytes) -> tuple[int, int, int, int]:
 def _parse_picture_rec(payload: bytes) -> int:
     """SHAPE_COMPONENT_PICTURE에서 BinData ID를 뽑는다.
 
-    앞부분은 테두리/자르기/그림자 정보라 길이가 버전에 따라 다르다. 실무적으로
-    안정적인 방법은 구조 오프셋(0x24 부근)을 시도하고, 실패하면 뒤에서부터
-    유효 범위의 UINT16을 찾는 것이다.
+    앞부분 길이가 고정이라 오프셋으로 바로 집을 수 있다::
+
+        0   테두리 선     COLORREF 4 + 두께 4 + 속성 4      = 12
+        12  이미지 사각형  INT32 x 8 (네 모서리 x,y)         = 32
+        44  자르기        INT32 x 4                        = 16
+        60  안쪽 여백     UINT16 x 4                       =  8
+        68  밝기 UINT8 / 69 명암 INT8 / 70 효과 UINT8
+        71  BinItem ID (UINT16)   <- 여기
+
+    버전에 따라 앞부분이 다를 수 있으므로, 값이 이상하면 주변을 훑어 본다.
     """
-    if len(payload) < 60:
-        return 0
-    for off in (0x24, 0x26, 0x28):
+    if len(payload) >= 73:
+        (v,) = struct.unpack_from("<H", payload, 71)
+        if 0 < v < 4096:
+            return v
+    # 폴백: 그럴듯한 위치를 순서대로 시도한다.
+    for off in (71, 68, 0x24, 0x26, 0x28):
         if off + 2 <= len(payload):
             (v,) = struct.unpack_from("<H", payload, off)
             if 0 < v < 4096:
                 return v
     return 0
+
+
+
+def _parse_picture_size(payload: bytes) -> tuple[Optional[float], Optional[float]]:
+    """그림 레코드의 사각형(네 모서리)에서 표시 크기를 pt로 계산한다.
+
+    offset 12부터 INT32 x 8 로 (x,y) 네 점이 들어 있다. HWPUNIT 단위다.
+    """
+    if len(payload) < 44:
+        return None, None
+    try:
+        pts = struct.unpack_from("<8i", payload, 12)
+    except struct.error:
+        return None, None
+    xs = pts[0::2]
+    ys = pts[1::2]
+    w = (max(xs) - min(xs)) / 100.0
+    h = (max(ys) - min(ys)) / 100.0
+    return (w or None), (h or None)
 
 
 def _sniff_image(data: bytes) -> str:

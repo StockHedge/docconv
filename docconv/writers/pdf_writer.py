@@ -123,8 +123,8 @@ def _write_with_story(
         font = None
 
     images = _collect_images(doc, archive) if opts.include_images else {}
-    css_parts.append(_base_css(opts, use_kfont=font is not None))
-    css = "\n".join(css_parts)
+    font_css = list(css_parts)  # @font-face 선언. 두 번째 조판에서도 그대로 쓴다.
+    css = "\n".join(font_css + [_base_css(opts, use_kfont=font is not None)])
 
     data = _typeset(fitz, _to_html(doc, opts, images), css, archive, doc)
 
@@ -135,8 +135,13 @@ def _write_with_story(
     #
     # 한 쪽짜리 문서나 표가 쪽을 넘기지 않는 문서는 배경을 그대로 살린다.
     if _has_ghost_fills(fitz, data):
+        # CSS의 `th { background-color }` 도 함께 꺼야 한다. 여기 남겨 두면
+        # 머리글 칸에 배경이 그대로 붙어 유령 띠가 계속 나온다.
+        css_nobg = "\n".join(
+            font_css + [_base_css(opts, use_kfont=font is not None, cell_bg=False)]
+        )
         data = _typeset(
-            fitz, _to_html(doc, opts, images, cell_bg=False), css, archive, doc
+            fitz, _to_html(doc, opts, images, cell_bg=False), css_nobg, archive, doc
         )
 
     _finalize(fitz, data, path, doc)
@@ -168,7 +173,12 @@ def _typeset(fitz, html: str, css: str, archive, doc: Document) -> bytes:
     return buf.getvalue()
 
 
-#: 이보다 납작한 색 채움은 셀 배경일 수 없다(글자 한 줄도 못 담는다).
+#: 유령 배경으로 볼 높이 범위(pt).
+#
+# 위쪽 한계: 이보다 두꺼우면 정상 셀 배경이다(글자 한 줄을 담는다).
+# 아래쪽 한계: 이보다 얇으면 **표 테두리 선**이다. 이 하한을 빠뜨리면 테두리를
+# 유령으로 오판해, 배경이 멀쩡한 문서까지 매번 다시 조판하며 배경을 버린다.
+_GHOST_MIN_HEIGHT = 2.0
 _GHOST_MAX_HEIGHT = 8.0
 
 
@@ -194,7 +204,10 @@ def _has_ghost_fills(fitz, data: bytes) -> bool:
                 if rgb in ((1.0, 1.0, 1.0), (0.0, 0.0, 0.0)):
                     continue
                 rect = dr["rect"]
-                if rect.height <= _GHOST_MAX_HEIGHT and rect.width > 20:
+                if (
+                    _GHOST_MIN_HEIGHT <= rect.height <= _GHOST_MAX_HEIGHT
+                    and rect.width > 20
+                ):
                     return True
         return False
     except Exception:
@@ -203,9 +216,12 @@ def _has_ghost_fills(fitz, data: bytes) -> bool:
         pdf.close()
 
 
-def _base_css(opts: ConvertOptions, *, use_kfont: bool) -> str:
+def _base_css(opts: ConvertOptions, *, use_kfont: bool, cell_bg: bool = True) -> str:
     fam = f"{_FONT_FAMILY}, sans-serif" if use_kfont else "sans-serif"
     size = opts.pdf_base_size_pt
+    # 셀 배경을 끄는 재조판에서는 머리글 배경도 함께 꺼야 한다. 여기 남겨 두면
+    # <th> 에 CSS 배경이 그대로 붙어 유령 띠가 계속 나온다.
+    th_bg = " background-color: #f0f0f0;" if cell_bg else ""
     return f"""
     * {{ font-family: {fam}; }}
     /* body 기본 여백을 0으로 두지 않으면 표가 좌측으로 10pt 밀려
@@ -218,7 +234,7 @@ def _base_css(opts: ConvertOptions, *, use_kfont: bool) -> str:
     h4, h5, h6 {{ font-size: {size * 1.12:.1f}pt; font-weight: bold; margin: {size * 0.7:.1f}pt 0 {size * 0.35:.1f}pt 0; }}
     table {{ border-collapse: collapse; margin: {size * 0.5:.1f}pt 0; }}
     td, th {{ padding: 3pt 4pt; vertical-align: top; text-align: left; }}
-    th {{ font-weight: bold; background-color: #f0f0f0; }}
+    th {{ font-weight: bold;{th_bg} }}
     ul, ol {{ margin: 0 0 {size * 0.35:.1f}pt 0; padding-left: {size * 1.6:.1f}pt; }}
     img {{ max-width: 100%; }}
     """

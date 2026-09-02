@@ -240,9 +240,15 @@ docs/
 
 ```bash
 python -m tests.test_all_pairs   # 핵심 8종 전 조합(56가지) 전수 시험
+python -m tests.test_regressions # 한 번 겪은 결함이 다시 나오는지
 python -m tests.test_matrix      # 보너스 형식 포함 왕복 시험
 python -m docconv --doctor       # 환경 진단
 ```
+
+`test_regressions` 는 **실제 문서에서 터졌던 결함**만 모아 둔 시험이다. 미지의
+서식 값을 서식으로 오판하지 않는지, 표가 쪽을 넘길 때 배경이 유령처럼 남지
+않는지, HWP 셀 좌표 오프셋이 유지되는지 같은 것들을 지킨다. 새 결함을 고칠
+때마다 여기에 한 줄이 는다.
 
 `test_all_pairs` 는 8종 사이의 가능한 모든 방향을 하나씩 실제로 변환하고,
 결과를 다시 읽어 표본 문자열이 살아남았는지 센다. MS Office 가 설치된 환경에서:

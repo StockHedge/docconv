@@ -343,9 +343,12 @@ class Document:
         yield from _walk_tables(self.blocks)
 
     def images(self) -> Iterator[Image]:
-        for b in self.blocks:
-            if isinstance(b, Image):
-                yield b
+        """중첩 표 안까지 포함해 모든 이미지를 순회한다.
+
+        표 셀 안의 그림을 빠뜨리면 "이미지 0개"라고 보고하게 된다. 한/글 양식
+        문서는 도장·서명 이미지를 표 칸에 넣는 경우가 흔하다.
+        """
+        yield from _walk_images(self.blocks)
 
     def to_text(self, table_sep: str = "\t") -> str:
         out: list[str] = []
@@ -361,8 +364,13 @@ class Document:
         return "\n".join(out)
 
     def stats(self) -> dict[str, int]:
+        """문서 전체 통계. 표 셀 안의 내용까지 센다.
+
+        최상위만 세면 양식 문서(전체가 표 한 장인 경우)가 "문단 0, 글자 0"으로
+        나와 변환이 실패한 것처럼 보인다. `blocks` 만 최상위 개수다.
+        """
         n_par = n_tbl = n_img = n_chr = 0
-        for b in self.blocks:
+        for b in _walk_all(self.blocks):
             if isinstance(b, Paragraph):
                 n_par += 1
                 n_chr += len(b.text)
@@ -402,6 +410,22 @@ class Document:
                 blank_streak = 0
             out.append(b)
         self.blocks = out
+
+
+def _walk_all(blocks: Sequence[Block]) -> Iterator[Block]:
+    """중첩 표 셀 안까지 모든 블록을 순회한다."""
+    for b in blocks:
+        yield b
+        if isinstance(b, Table):
+            for row in b.rows:
+                for cell in row:
+                    yield from _walk_all(cell.blocks)
+
+
+def _walk_images(blocks: Sequence[Block]) -> Iterator[Image]:
+    for b in _walk_all(blocks):
+        if isinstance(b, Image):
+            yield b
 
 
 def _walk_tables(blocks: Sequence[Block]) -> Iterator[Table]:

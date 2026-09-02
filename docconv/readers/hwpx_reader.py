@@ -380,8 +380,11 @@ def _parse_border_fill(bf: etree._Element) -> FillStyle:
             borders.append(Border())
             continue
         any_set = True
+        # 모르는 값이면 **선을 긋지 않는다**. 취소선 사례와 같은 위험이다 —
+        # 예상 밖의 값 하나에 모든 칸이 테두리로 덮이는 것보다, 알려진 종류일
+        # 때만 긋는 편이 안전하다. 아래 매핑이 한/글의 선 종류를 망라한다.
         style = _BORDER_STYLE_MAP.get(
-            (el.get("type") or "NONE").upper(), BorderStyle.SOLID
+            (el.get("type") or "NONE").upper(), BorderStyle.NONE
         )
         color = units.hwp_color_to_rgb(el.get("color"))
         borders.append(
