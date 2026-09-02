@@ -180,6 +180,33 @@ _ALIGN_MAP = {
     "DISTRIBUTE_SPACE": Align.DISTRIBUTE,
 }
 
+# 서식 적용 여부는 **알려진 값일 때만 켠다**(화이트리스트).
+#
+# "NONE이 아니면 적용"으로 판정하면 모르는 값 하나에 문서 전체가 망가진다.
+# 실제로 어떤 한/글 저장본은 취소선 없음을 `shape="NONE"` 이 아니라
+# `shape="3D"` 로 적어 두는데, 블랙리스트 방식이면 **모든 글자에 취소선**이
+# 그어진다. 스펙에 없는 값이 나와도 서식을 켜지 않는 쪽이 안전하다.
+
+#: 밑줄을 실제로 긋는 위치 값 (LineType/위치 열거)
+_UNDERLINE_ON = frozenset({"BOTTOM", "CENTER", "TOP"})
+
+#: 취소선을 실제로 긋는 선 모양 값 (LineType2 열거)
+_STRIKE_ON = frozenset(
+    {
+        "SOLID",
+        "DASH",
+        "DOT",
+        "DASH_DOT",
+        "DASH_DOT_DOT",
+        "LONG_DASH",
+        "CIRCLE",
+        "DOUBLE_SLIM",
+        "SLIM_THICK",
+        "THICK_SLIM",
+        "SLIM_THICK_SLIM",
+    }
+)
+
 
 def _parse_header(root: etree._Element) -> StyleTable:
     tbl = StyleTable()
@@ -218,9 +245,9 @@ def _parse_header(root: etree._Element) -> StyleTable:
             elif name == "italic":
                 cs.italic = True
             elif name == "underline":
-                cs.underline = (ch.get("type") or "NONE").upper() != "NONE"
+                cs.underline = (ch.get("type") or "").upper() in _UNDERLINE_ON
             elif name == "strikeout":
-                cs.strike = (ch.get("shape") or "NONE").upper() != "NONE"
+                cs.strike = (ch.get("shape") or "").upper() in _STRIKE_ON
             elif name == "fontRef":
                 fid = _i(ch.get("hangul"), _i(ch.get("latin"), -1))
                 cs.font = tbl.fonts.get(fid)
@@ -316,6 +343,13 @@ _BORDER_STYLE_MAP = {
     "SLIM_THICK": BorderStyle.DOUBLE,
     "THICK_SLIM": BorderStyle.DOUBLE,
     "SLIM_THICK_SLIM": BorderStyle.DOUBLE,
+    # 테두리에서는 3D 계열이 유효한 선 종류다(글자 취소선의 "3D"와는 뜻이 다르다).
+    "3D": BorderStyle.SOLID,
+    "3D_INSET": BorderStyle.SOLID,
+    "THICK_3D": BorderStyle.SOLID,
+    "THICK_3D_INSET": BorderStyle.SOLID,
+    "WAVE": BorderStyle.DASHED,
+    "DOUBLE_WAVE": BorderStyle.DOUBLE,
 }
 
 _BORDER_SIDES = ("leftBorder", "topBorder", "rightBorder", "bottomBorder")

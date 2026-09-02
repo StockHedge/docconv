@@ -124,12 +124,31 @@ def _write_with_story(
 
     images = _collect_images(doc, archive) if opts.include_images else {}
     css_parts.append(_base_css(opts, use_kfont=font is not None))
-    html = _to_html(doc, opts, images)
+    css = "\n".join(css_parts)
 
-    story = fitz.Story(html=html, user_css="\n".join(css_parts), archive=archive)
+    data = _typeset(fitz, _to_html(doc, opts, images), css, archive, doc)
 
-    # DocumentWriter를 파일 경로에 직접 걸면 Windows에서 핸들이 남아 후처리
-    # (서브셋 후 교체)가 실패한다. 메모리 버퍼에 조판한 뒤 한 번만 저장한다.
+    # 표가 쪽을 넘기면 Story가 첫 쪽의 셀 배경을 이후 모든 쪽에 **유령처럼
+    # 복사**한다(같은 x·폭·색, 높이만 6pt로 뭉갠 채). 그 띠가 본문 글줄 위에
+    # 얹혀 취소선처럼 보인다. 어떤 HTML/CSS로도 피하지 못해서, 조판 결과를
+    # 살펴보고 유령이 생겼을 때만 셀 배경을 빼고 다시 조판한다.
+    #
+    # 한 쪽짜리 문서나 표가 쪽을 넘기지 않는 문서는 배경을 그대로 살린다.
+    if _has_ghost_fills(fitz, data):
+        data = _typeset(
+            fitz, _to_html(doc, opts, images, cell_bg=False), css, archive, doc
+        )
+
+    _finalize(fitz, data, path, doc)
+
+
+def _typeset(fitz, html: str, css: str, archive, doc: Document) -> bytes:
+    """HTML을 조판해 PDF 바이트를 만든다.
+
+    DocumentWriter를 파일 경로에 직접 걸면 Windows에서 핸들이 남아 후처리가
+    조용히 실패한다. 그래서 메모리 버퍼에 담아 돌려준다.
+    """
+    story = fitz.Story(html=html, user_css=css, archive=archive)
     buf = io.BytesIO()
     writer = fitz.DocumentWriter(buf)
 
@@ -146,8 +165,42 @@ def _write_with_story(
         story.draw(dev)
         writer.end_page()
     writer.close()
+    return buf.getvalue()
 
-    _finalize(fitz, buf.getvalue(), path, doc)
+
+#: 이보다 납작한 색 채움은 셀 배경일 수 없다(글자 한 줄도 못 담는다).
+_GHOST_MAX_HEIGHT = 8.0
+
+
+def _has_ghost_fills(fitz, data: bytes) -> bool:
+    """둘째 쪽부터 나타나는 비정상적으로 납작한 색 채움을 찾는다.
+
+    정상 셀 배경은 셀 높이만큼(수십 pt) 칠해진다. 유령은 높이가 6pt 안팎으로
+    고정된 채 본문 글줄을 가로지른다.
+    """
+    try:
+        pdf = fitz.open("pdf", data)
+    except Exception:
+        return False
+    try:
+        if pdf.page_count < 2:
+            return False
+        for pno in range(1, pdf.page_count):
+            for dr in pdf[pno].get_drawings():
+                fill = dr.get("fill")
+                if not fill:
+                    continue
+                rgb = tuple(round(v, 2) for v in fill)
+                if rgb in ((1.0, 1.0, 1.0), (0.0, 0.0, 0.0)):
+                    continue
+                rect = dr["rect"]
+                if rect.height <= _GHOST_MAX_HEIGHT and rect.width > 20:
+                    return True
+        return False
+    except Exception:
+        return False
+    finally:
+        pdf.close()
 
 
 def _base_css(opts: ConvertOptions, *, use_kfont: bool) -> str:
@@ -214,7 +267,13 @@ _ALIGN_CSS = {
 }
 
 
-def _to_html(doc: Document, opts: ConvertOptions, images: dict[int, str]) -> str:
+def _to_html(
+    doc: Document,
+    opts: ConvertOptions,
+    images: dict[int, str],
+    *,
+    cell_bg: bool = True,
+) -> str:
     # 표 열 너비를 pt 절대값으로 지정하려면 실제로 쓸 수 있는 본문 폭이 필요하다.
     left, _, right, _ = doc.margin_pt
     usable = max(72.0, doc.page_width_pt - left - right)
@@ -234,7 +293,7 @@ def _to_html(doc: Document, opts: ConvertOptions, images: dict[int, str]) -> str
         if list_open:
             parts.append(f"</{list_open}>")
             list_open = None
-        parts.append(_block_html(b, opts, images, usable))
+        parts.append(_block_html(b, opts, images, usable, cell_bg=cell_bg))
 
     if list_open:
         parts.append(f"</{list_open}>")
@@ -243,7 +302,12 @@ def _to_html(doc: Document, opts: ConvertOptions, images: dict[int, str]) -> str
 
 
 def _block_html(
-    b: Block, opts: ConvertOptions, images: dict[int, str], usable_pt: float = 453.0
+    b: Block,
+    opts: ConvertOptions,
+    images: dict[int, str],
+    usable_pt: float = 453.0,
+    *,
+    cell_bg: bool = True,
 ) -> str:
     if isinstance(b, Paragraph):
         inner = _runs_html(b.runs, opts)
@@ -261,7 +325,7 @@ def _block_html(
         return f"<p{attr}>{inner}</p>"
 
     if isinstance(b, Table):
-        return _table_html(b, opts, images, usable_pt)
+        return _table_html(b, opts, images, usable_pt, cell_bg=cell_bg)
 
     if isinstance(b, Image):
         name = images.get(id(b))
@@ -278,7 +342,12 @@ def _block_html(
 
 
 def _table_html(
-    t: Table, opts: ConvertOptions, images: dict[int, str], usable_pt: float = 453.0
+    t: Table,
+    opts: ConvertOptions,
+    images: dict[int, str],
+    usable_pt: float = 453.0,
+    *,
+    cell_bg: bool = True,
 ) -> str:
     """표를 HTML로. 열 너비는 **pt 절대값**으로 지정한다.
 
@@ -318,7 +387,7 @@ def _table_html(
                     style.append(f"width:{span_w:.1f}pt")
 
             if opts.keep_formatting:
-                if c.background:
+                if c.background and cell_bg:
                     style.append(f"background-color:{units.rgb_to_hex(c.background)}")
                 if c.borders is not None:
                     # 좌/상/우/하 순서로 저장돼 있다.
@@ -332,7 +401,7 @@ def _table_html(
             if style:
                 attrs += f' style="{";".join(style)}"'
             inner = "".join(
-                _block_html(bb, opts, images, usable_pt)
+                _block_html(bb, opts, images, usable_pt, cell_bg=cell_bg)
                 for bb in c.blocks
                 if isinstance(bb, (Paragraph, Table, Image))
             )
