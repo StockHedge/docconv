@@ -284,6 +284,74 @@ def test_pdf_font_is_subset() -> str:
 # --------------------------------------------------------------------------
 
 
+def _sample_hwpx(name: str) -> Path:
+    """개요 스타일을 쓰는 문서를 hwpx로 쓴다.
+
+    개요(heading)가 있어야 _styles()가 표에 새 항목을 등록하는 경로를 탄다.
+    """
+    doc = Document(
+        blocks=[
+            Paragraph.of("큰 제목", heading=1),
+            Paragraph.of("작은 제목", heading=3),
+            Paragraph.of("본문 한 줄."),
+        ]
+    )
+    out = WORK / name
+    write_hwpx(doc, out, ConvertOptions())
+    return out
+
+
+def test_hwpx_header_has_no_dangling_ids() -> str:
+    """스타일이 정의되지 않은 글자·문단 모양을 가리키면 안 된다.
+
+    _styles()는 XML을 내놓으면서 표에 항목을 새로 등록하는 부수효과가 있다.
+    이 호출이 _char_properties()·_para_properties() 뒤에 오면 새 항목이
+    직렬화에서 빠져 매달린 참조가 남는다. 그런 hwpx는 Polaris Office가
+    "파일 형식이 맞지 않아 열 수 없어요"로 통째로 거부한다(2026-09-08 실측).
+    """
+    out = _sample_hwpx("dangling.hwpx")
+    head = zipfile.ZipFile(out).read("Contents/header.xml").decode("utf-8")
+    para = set(re.findall(r'<hh:paraPr id="(\d+)"', head))
+    char = set(re.findall(r'<hh:charPr id="(\d+)"', head))
+    styles = re.findall(
+        r'<hh:style id="(\d+)"[^>]*paraPrIDRef="(\d+)" charPrIDRef="(\d+)"', head
+    )
+    check(bool(styles), "스타일이 하나도 없다")
+    bad = [(s, p, c) for s, p, c in styles if p not in para or c not in char]
+    check(
+        not bad,
+        f"매달린 참조 {len(bad)}건: "
+        + ", ".join(f"style{s}→para{p}/char{c}" for s, p, c in bad[:5])
+        + f" (정의된 paraPr={sorted(para, key=int)}, charPr={sorted(char, key=int)})",
+    )
+    return f"스타일 {len(styles)}개 참조 모두 해소"
+
+
+def test_hwpx_mimetype_is_stored_first() -> str:
+    """mimetype은 ZIP의 첫 항목이면서 무압축이어야 한다.
+
+    OCF 규칙(ODF/EPUB와 동일)이다. 많은 구현이 압축을 풀지 않고 파일 선두의
+    고정 위치에서 이 문자열을 읽어 형식을 판별한다.
+    """
+    out = _sample_hwpx("mimetype.hwpx")
+    raw = out.read_bytes()
+    first = zipfile.ZipFile(io.BytesIO(raw)).infolist()[0]
+    check(
+        first.filename == "mimetype", f"첫 항목이 mimetype이 아니다: {first.filename}"
+    )
+    check(
+        first.compress_type == zipfile.ZIP_STORED,
+        f"mimetype이 압축되어 있다 (compress_type={first.compress_type})",
+    )
+    check(not first.extra, f"mimetype에 extra 필드가 있다 ({len(first.extra)}바이트)")
+    # 선두 30바이트는 로컬 헤더, 그 뒤가 파일명 + 내용이다.
+    check(
+        raw[30:38] == b"mimetype" and raw[38:57] == b"application/hwp+zip",
+        "파일 선두에서 mimetype 문자열을 바로 읽을 수 없다",
+    )
+    return "첫 항목 · 무압축 · 선두에서 판독 가능"
+
+
 TESTS = (
     test_unknown_format_value_does_not_enable,
     test_unknown_border_type_draws_nothing,
@@ -292,6 +360,8 @@ TESTS = (
     test_hwp_picture_tag_constant,
     test_nested_content_is_counted,
     test_pdf_font_is_subset,
+    test_hwpx_header_has_no_dangling_ids,
+    test_hwpx_mimetype_is_stored_first,
 )
 
 

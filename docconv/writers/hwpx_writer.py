@@ -191,7 +191,16 @@ def write_hwpx(doc: Document, path: Path | str, opts: ConvertOptions) -> None:
         with zipfile.ZipFile(
             str(path), "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
         ) as z:
-            z.writestr("mimetype", "application/hwp+zip")
+            # mimetype은 ZIP의 첫 항목이면서 무압축이어야 한다(OCF 규칙,
+            # ODF/EPUB와 동일). 많은 구현이 압축을 풀지 않고 파일 선두의
+            # 고정 위치(오프셋 30)에서 이 문자열을 바로 읽어 형식을
+            # 판별하기 때문이다. 압축하면 그 자리가 알아볼 수 없는
+            # 바이트가 되어 "파일 형식이 맞지 않다"며 거부당한다
+            # (Polaris Office에서 실제로 확인).
+            # ZipFile의 compression은 기본값일 뿐이라 항목마다 눌러야 한다.
+            z.writestr(
+                "mimetype", "application/hwp+zip", compress_type=zipfile.ZIP_STORED
+            )
             z.writestr("version.xml", _version_xml())
             z.writestr("META-INF/container.xml", _container_xml())
             z.writestr("META-INF/manifest.xml", _manifest_xml())
@@ -319,6 +328,13 @@ def _media_type(name: str) -> str:
 
 
 def _header_xml(t: _Tables, doc: Document) -> str:
+    # 스타일을 먼저 만든다. _styles()는 XML을 내놓기만 하는 게 아니라
+    # 개요 1~9가 쓸 글자·문단 모양을 표에 새로 등록하고 그 ID를 참조한다.
+    # 아래 리스트는 위에서부터 평가되므로, 이 호출이 _char_properties()·
+    # _para_properties() 뒤에 있으면 새로 등록된 항목이 직렬화에서 빠져
+    # 스타일이 없는 ID를 가리키게 된다. 그런 파일은 Polaris Office가
+    # "파일 형식이 맞지 않아 열 수 없어요"로 통째로 거부한다(실측).
+    styles = _styles(t)
     p: list[str] = [
         _XML_DECL,
         f'<hh:head {_NSDECL} version="1.4" secCnt="1">',
@@ -333,7 +349,7 @@ def _header_xml(t: _Tables, doc: Document) -> str:
         _numberings(),
         _bullets(),
         _para_properties(t),
-        _styles(t),
+        styles,
         "</hh:refList>",
         '<hh:compatibleDocument targetProgram="HWP201X">'
         "<hh:layoutCompatibility/></hh:compatibleDocument>",
